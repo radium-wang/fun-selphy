@@ -1,0 +1,70 @@
+CP1500 1.0.7.0 main MMU/cache mapping static analysis
+All instruction locations are main.bin FILE OFFSETS; code runtime=file-0x80.
+No device operations. ARM descriptor interpretation checked against ARM926EJ-S TRM:
+https://documentation-service.arm.com/static/5e8e3d1088295d1e18d3a9b2
+
+1. ACTIVE TABLE CONSTRUCTION AND ENABLE (HIGH CONFIDENCE)
+Initialization file0x42204c calls file0x548, which zeros16KiB at0x00700000 and
+builds first-level1MiB section descriptors. Bounds read via runtime0x448 and0x488
+correspond file0x4c8=0x00704000 and file0x508=0x08000000. The latter is an
+explicit128MiB mapping limit, stronger evidence than allocation-pool arithmetic.
+At0x6f4 the builder branches0x400, writing CP15 c2=0x00700009 (table base0x700000),
+c3=0x55555555 (all16 domains Client, permission checks enabled).
+c1 OR6 enables D-cache(bit2) and alignment checking(bit1); OR0x1000 enables
+I-cache(bit12); after TLB invalidation OR1 enables MMU(bit0).
+These are startup instructions, not merely unused library routines.
+
+2. INITIAL SECTION MAP
+virtual                    physical                   low descriptor bits
+0x00000000..0x000fffff      same                       0xC1A
+0x00100000..0x07ffffff      same                       0xC1E
+0x40000000..0x47ffffff      SAME HIGH ADDRESS          0xC12
+0xf0000000..0xf00fffff      same                       0xC12
+0xfc000000..0xfdffffff      same                       0xC12
+Other entries remain fault descriptors after table memset, except any subsequent
+changes not identified in this analysis. MMIO entries built0x5fc..0x6ec.
+All listed descriptors: type2 section, domain0, AP[11:10]=3. Under Client domain,
+privileged and user mode both have read/write permission. This ARMv5 section
+format has no execute-never field; it does not distinguish data from code with XN.
+0xC1A: C=1,B=0, write-through cacheable (first1MiB special case).
+0xC1E: C=1,B=1, write-back cacheable.
+0xC12: C=0,B=0, noncacheable/nonbufferable.
+
+IMPORTANT ALIAS PRECISION
+The high0x40000000 mapping is NOT an MMU mapping down to physical0.
+Instructions0x5d8..0x5e8 retain the high physical base in each descriptor.
+Thus if low/high pointers access the same RAM, that alias is implemented by SoC
+physical address decoding, not by these page table entries. The firmware's many
+OR/BIC0x40000000 operations and cache helper checks strongly support intended
+cached/uncached aliases, but the physical bus alias itself is not established
+by a board data sheet or a live readback. Do not overstate MMU-proven aliasing.
+
+3. PERMISSION/CHANGES
+file0x788 chooses first-section descriptor0xC1E when r0!=0, else0xC1A, stores at
+0x700000 and flush-invalidates the table storage. No direct BL caller was found.
+file0x6f8 is a range mapper: writes low addresses as0xC1E and corresponding high
+addresses+0x40000000 as0xC12. Again both are identity mappings, not remapped PA.
+No direct BL caller was found. Generic CP15 routines0x27ad74..0x27af8c also
+provide cache/MMU enables, domain control, and table entry set/get; their mere
+presence does not prove runtime table changes or access to these APIs.
+
+4. CACHE PRIMITIVES CONFIRMED
+file0x321264 is dc_cache_flush, name runtime0x4b1250/string file0x4b12d0.
+It requires start<=end and both addresses with bit0x40000000 clear, aligns to32B,
+and invokes worker runtime0x10d4c/file0x10dcc. Worker issues CP15 c7,c10,1
+(clean D-cache line by MVA), then wrapper drains/finishes via0x2d5ca4.
+file0x321358 is dc_cache_flush_invalidate (name runtime0x4b125f), same address
+checks and32B stride; worker runtime0x10d68/file0x10de8 issues c7,c14,1
+(clean+invalidate D-cache line by MVA).
+file0x10e04 issues c7,c5,1 (I-cache line invalidate by MVA).
+These positively identify earlier LCD/USB calls, previously marked only probable.
+USB IN file0x2df0cc tests bit0x40000000; if clear calls flush_invalidate before
+USB DMA start. IPv4 receive0x2d4cb0 strips that bit and flush-invalidates the
+received-buffer range. These reinforce alias convention and cache-coherency needs.
+
+5. PRACTICAL IMPLICATION
+Static mapping reserves executable-capable, writable RAM and distinguishes cached
+and uncached views. This removes an XN obstacle from the initial page table, but
+still does not provide a loader, entrypoint, allocator ownership, or thread-safe
+execution. A loaded program would need correct ARM/Thumb state, stack, relocation,
+cache publication and I-cache invalidation. No usable running program is claimed.

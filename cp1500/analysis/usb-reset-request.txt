@@ -1,0 +1,30 @@
+USB DEBUG_LINK_RESET static request decoding
+All code references = main.bin file offset. Runtime executable address=file-0x80.
+
+Critical correction: 0x81 is wValue, NOT bRequest.
+-9f554 LDRH r0,[r0,#2];9f55c CMP r0,#0x81.
+-Raw USB setup layout corroborated by standard handler99a28 and9f53c loading bRequest byte+1, and routing998b4 reading bmRequestType byte0/998c4 reading wIndex halfword+4.
+
+Callback registration:
+9f650 sets runtimefc852c+104=runtime9f4b4 (file9f534 BX LR event callback).
+9f660 sets+10c=runtime9f4b8(file9f538 standard callback).
+9f66c sets+110=runtime9f4d0(file9f550 vendor callback).
+9f674 sets+108=runtime9f50c(file9f58c class callback returning0).
+9f680..684 calls9a198(interface2,object,alt0), which writes object byte0=2.
+
+Routing:
+99e34 vendor-dispatch routine logs bRequest at+1 but does not compare it. It loops registered active alternate-setting objects, first calls998ac(object,setup), then invokes object+110.
+998ac decodes bmRequestType&0x1f: recipient1/interface or3/other selects wIndex low byte as interface. If nonzero it must equal object byte0. Recipient2 selects endpoint against object bytes+1,+2,... . Recipient0/device leaves both selectors0 and matches all objects until one handles request.
+For observed interface2, precise interface-scoped candidate is:
+ bmRequestType=0x41 (host-to-device, vendor, interface)
+ bRequest: not checked in examined vendor dispatch/callback (0 is a candidate, not a recovered mandated opcode)
+ wValue=0x0081
+ wIndex=0x0002
+ wLength=0
+No claim of device-tested result from this analysis. Avoid confusing wValue81 with bRequest81/wValue0.
+
+Reset action:
+9f550 on matching wValue logs DEBUG_LINK_RESET, calls32471c, zeros three words in response object passed in r1, returns1(handled).
+32471c calls2dfce8(0,0). This takes transport/channel0 branch, sets runtime70fa66[0]=4 at2dfd98 and calls2df0ac at2dfdcc (USB reset path). This is a debug-link reset, not a printer full restart in the examined code.
+
+Saved callback disassembly: usb-reset-callback.asm.

@@ -1,0 +1,37 @@
+CP1500 v1.0.7.0 debug/factory interfaces — static evidence
+2026-10-30. Analyzed unpacked/1070/main.bin and boot.bin; no device or network interaction.
+All addresses below are MAIN FILE OFFSETS unless marked runtime. Capstone ARM disassembly from inspect_main.py. Selected absolute readonly pointers map to file +0x80, not assumed universally.
+
+TELNET / IPERF: confirmed implementation, strong startup-path evidence
+- Init function 0x1a7398 calls create wrapper 0x1eb6ac at 0x1a73d0 and start wrapper 0x1ebb14 at 0x1a73f0; success stores 1 at runtime 0x74a61c.
+- Direct BL caller 0x154218 is in WLAN initialization, following WPA supplicant initialization at 0x1540f4. This is not merely an unused string. However upstream conditions, interface binding and actual network reachability remain unverified.
+- Failure diagnostic nearby: wlanIperfInitializeIperfSubsystem() ErrCode at 0x1543b4.
+- Start helper 0x1ebac4 passes r0=IP instance, r1=0xe757, r2=socket, r3=1 to 0x2b4238 at 0x1ebae4. Callee implements listen-like validation/list management. High-confidence TCP listen port candidate = 59223, NOT 23; API identity inferred from code, not symbol recovered.
+- Banner 0x1a7358 SELPHY TELNET Server. Login prompt 0x1a7348; command prompt 0x1a7338.
+- 0x1a7128 loads fixed password string at 0x1a7318 ('alps-alsi'); compares received input at 0x1a7130; success sets auth flag runtime 0x74a604. Failure count runtime 0x74a618; comparison against 5 at 0x1a7174 leads to disconnect.
+- Visible parser recognizes single argument 'q' (string 0x1a6fd0, comparison 0x1a6e08), and 'iperf' (0x1a7008, comparison path 0x1a6e94); help -h/--help. Other path prints invalid command (0x1a7304).
+- Conclusion: diagnostic iperf console, NOT evidence of a general shell, filesystem upload, arbitrary command execution or program loader. No login performed.
+- Saved broader disassembly: analysis/telnet.asm.
+
+USB DEBUG MONITOR / FACTORY PROTOCOL: promising but not complete execution route
+- adml_usb_dev_enable_dbgmon string 0x4b3af2 maps through literal at 0x1fbe4 to function 0x1fa44. It calls 0x94448, which logs PRINTER DEV ENABLE and sets runtime [0x7114e8+1]=1. This enables a printer-device flag; USB descriptor change itself not established.
+- adml_module_dbgmon_enable (string0x4b1d5d; reference0x71ac) associated function0x6f6c appears to log and return0; do NOT assume every debug-enable name denotes an operative implementation.
+- Function0x6438 logs Enable DBGmon interface and dispatches message/event5 through0x2cb38.
+- NEW_CP1_printer_dbgmon__command_parse (string0x4bd20d, pointer0x99758) function0x995c8 checks command bytes: byte0=0x2b, byte1=1, bytes2/3=0, words at+4 and+8=0. Successful match sets result0 and consumes12 bytes. This is a specific packet recognizer, not a shell command.
+- Wrapper0x996b4 maps successful parse to true; execution callback0x996d4 calls a registered function pointer with event5 and context. Combined with event5 enable dispatch above this is a plausible debug-enable route, but callback registration/transport framing/complete path not yet proven. Do not transmit based solely on these bytes.
+- Factory/inspection parser names include EC3x_printer_line_inspection__command_parse (0x4bc934, pointer ref0x97ab4), develop, mecha_develop, pwm, lf_write and ud_write. Presence established; exact commands and authorization/mode gates not fully traced.
+- Debug-monitor USB buffer code near0x2df100 and socket accept loop0x2df1d0 with 'dbgmon: Skt Accept %d' at0x2df3a0 show multiple transport-related implementations.
+- 'HDebugWriteMem.. MI fail' exists in main0x2a2389 and boot0xd6cd. It suggests a debugger memory-write handler, but parsing, address checks, invocation path and execute primitive have NOT been established.
+
+UART
+- UART_Open, UART_Rx, UART_Tx, UART interrupt/semaphore implementation strings around0xfc34,0x101a4,0x101d8,0x1020c,0x106c0.
+- Presence of UART driver established; console connection, pins, baud and boot interaction remain unknown.
+
+ADB
+- Case-insensitive whole-word adb, Android, CNXN and WRTE scans found zero matches in main.bin. Four 'adbd' byte substrings are in data/font-like areas, not daemon names or an identified ADB implementation.
+- Together with ThreadX context this yields NO evidence for Android ADB. It is a bounded negative result, not proof no proprietary debug protocol exists.
+
+CUSTOM PROGRAM PATH ASSESSMENT
+- Telnet login alone does not provide an execution primitive; discovered commands are diagnostic iperf.
+- Most useful next static target is printer dbgmon event5 -> callback registration -> actual USB/debug monitor command dispatcher -> memory read/write/execute handlers and mode gates.
+- Need establish RAM map, calling convention, cache handling and safe entry point before a RAM-only test payload can be justified. No ready-to-run loader or unsigned firmware acceptance demonstrated here.

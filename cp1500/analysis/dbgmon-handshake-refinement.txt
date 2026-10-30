@@ -1,0 +1,60 @@
+DBGmon reset / receive arming / channel0 framing refinement
+Static only; file offsets throughout. Parent owns any device interaction.
+
+RESET ARMING
+Vendor callback0x9f550 compares input halfword+2 with0x81, then0x32471c invokes
+mux0x2dfce8(reason0). It flags state70fa66[link0]=4; it does not directly receive.
+Worker main0x347a68 calls0x2e03b8 to classify link state. For USB that first checks
+0x33b2dc device state==4 via0x2df0ac; otherwise reports USB unconfigured(state3).
+If reset requested, worker0x347bbc calls0x2e0798. This cancels/reset endpoints
+via0x33b368(EP,1), resets rings/state, and0x2e08b4..c4 immediately submits an
+8-byte OUT receive via0x2df188. Worker then marks4 available slots via0x2e08f8.
+Reset marks70fa68=1 (reset flag awaiting outbound announcement) and70fa60=1
+(RX header pending). No initial IN is sent in this path before the first OUT.
+Thus waiting for IN before issuing OUT may time out normally; OUT timeout itself
+indicates a different gate: receive not armed, worker not running, link unconfigured,
+or host endpoint/interface issue. Do not solve OUT timeout with command framing.
+Worker is created by0x2e0a6c as dbg_main, entryruntime0x3479e8/file0x347a68,
+auto-start1. Called by dbgmon_init0x324580; initialization may fail before that.
+No evidence suggests repeated set_configuration is needed after proper enumeration.
+
+EMPTY FLOW-CONTROL HEADER (STATIC DERIVATION)
+04 00 00 00 00 00 00 FB
+8 bytes: credit4, zero submessages/payload length; byte checksum makes sum255.
+Send as its own8-byte OUT transfer. Expected first response, if four slots marked
+and reset flag present:14 00 00 00 00 00 00 EB. This is a predicted device response,
+not a captured response. Completion logic clears the announced reset flag.
+
+CRITICAL INTERNAL/WIRE OFFSET CORRECTION
+Channel0 callback0x2e0b00 copies6 wire header bytes to internal[0:6], then reads
+remaining wire body into internal+7, leaving an internal gap at byte6.
+Therefore parser internal opcode[7] is WIRE[6], tag[8] is WIRE[7], target channel[9]
+is WIRE[8], u16 internal[a]/[c] are WIRE[9]/[11]. Earlier shorthand equating parser
+buffer offsets with wire offsets was incorrect.
+
+OPEN PACKET CANDIDATE (STATIC, NOT VERIFIED ON DEVICE)
+Outer8-byte header:
+04 01 0F 00 00 00 00 EB
+Then separate15-byte payload:
+00 00 0F 00 01 00 01 01 01 0E 04 0E 04 00 00
+Payload: header channel0,length15,control credit1; body open1,tag1,channel1,
+RX/TX declared sizes0x040e, two trailing zero bytes. The parser caps incoming
+control-message copy length at15; only listed fields are used by the open branch.
+Successful channel open sets active1. Reply opcode0x81 is at reply WIRE[6]; reply
+WIRE[7] is status; parser stores response contiguously (no incoming gap).
+Response is suppressed while channel0 credit counter==0 (0x2e0ccc..cd4), so
+header byte4 must grant at least one control-message response credit.
+Only use after successful link-level exchange. These bytes grant/open a debug
+channel and do not contain memory read/write/execute commands.
+
+ROOT REPORTED DEVICE OBSERVATION / POLLING INFERENCE
+Parent reported successful vendor reset and empty credit exchange, with predicted
+14 00 00 00 00 00 00 EB device header observed. After open header+payload parent
+reported only empty IN ACK 00 00 00 00 00 00 00 FF, then IN timeout.
+Static followup: channel0 template71711c starts active1. RX byte0 uses low nibble;
+no requirement for host echoing reset bit4 was identified. Worker0x347cc4 calls
+0x2dfc0c to mark TX buffer ready but does not directly start USB. Transfer completion
+mux callbacks drive actual sends. Thus an empty ACK may precede asynchronous open
+processing, and a further empty-credit OUT poll can trigger the queued reply.
+This is a timing/state-machine inference; root owns validation. Avoid repeatedly
+resending open because successful first open changes target channel state.

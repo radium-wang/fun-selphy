@@ -1,0 +1,79 @@
+CP1500 1.0.7.0 LCD / 自定义绘图 / 按钮静态分析
+分析对象：unpacked/1070/{boot.bin,main.bin}；仅离线反汇编，未连接设备。
+
+地址说明
+本报告函数位置均为解包文件偏移，不是可以直接调用的运行时绝对地址。
+main 若干代码/字符串 literal 指针对应文件位置 +0x80；boot 对应 +0x140。
+例如 main panel literal 0x4d3278 -> file 0x4d32f8，boot 0x2a1e8 -> file 0x2a328。
+因此不能机械地把 boot file offset 加 0x500000 当作最终执行地址。
+下列 framebuffer/MMIO 数字是指令 literal 中的原始指针常量，真实运行映射未验证。
+
+一、面板驱动：ST7272A（高置信）
+boot file0x6450 启动 LCD 初始化路径调用 file0x7470，后者有
+ST7272A_lcd_api_entry 日志并安装 8 个回调。main 对应注册函数 file0x10545c。
+main 回调 literal：0x105370, 0x105358, 0x105320, 0x1052e8,
+0x1052e0, 0x1052d8, 0x1052d0, 0x10522c（文件位置各加0x80）。
+所以该面板名称不只是孤立字符串，有实际驱动注册证据。
+main file0x1054b0 通过回调分高字节/低字节发送16位控制值；周边包含片选式
+回调和延时。疑似串行控制接口，但未凭芯片寄存器手册确认 SPI 模式。
+
+二、显示尺寸和格式（高置信）
+main file0x6745c 是 lcddrv_display 候选，boot 对应 file0x6c90。
+入口 r0 为图像数据指针。循环明确使用宽640、高240，先读取一行640*3字节，
+每相邻两个横向像素逐通道相加右移1，输出320个三字节像素，循环240行。
+输出行步长960，帧大小320*240*3=230400=0x38400字节。
+据此：LCD 输出320×240、每像素24位三通道；上层输入640×240三字节像素。
+尚未确认通道顺序是 RGB 还是 BGR，不应直接宣称已确认 RGB888。
+boot 初始化 file0x6450..0x6684 还将240写入控制器+0x26、960写入+0x2c。
+未确认刷新率、垂直同步等待机制、面板精确时序。
+
+三、帧缓冲与提交（高置信，运行映射待验证）
+LCD 控制器 MMIO 原始常量 0xF0001000，+0x3B 的 bit6 选择/切换缓冲。
+main 双缓冲 0xD10640、0xD48A40，差0x38400；scratch 0xD80E40。
+boot 双缓冲 0x16BC00、0x1A4000；scratch 0x1DC400。
+main file0x675E4 返回不在显示的 LCD buffer：bit6清零时返回0xD48A40，
+置位时返回0xD10640。该块有 lcddrv_get_nouse_lcdbuff() 错误日志。
+main file0x67C3C 的 lcdapi_sub_display 候选用 r0 作为缓冲编号，构造
+0xD821BC + index*460800，调用 file0x6745C。
+这从调用链再次确认上层帧大小640*240*3=460800。
+上层 lcdapi_display 检查初始化和缓冲编号0/1，file0xD4E8..0xD524
+检查 busy 状态后进入 file0x67C3C。
+显示路径附近调用 file0x321264/0x321358，疑似缓存维护，尚未充分定性。
+固件另有“LCD capture is not supported”，不能据日志声称支持截图接口。
+
+四、自己的程序可以复用什么
+若其他分析先取得代码执行和正确运行时映射，可先复用现有显示驱动，
+在640×240三字节缓冲里绘制；320×240程序每个像素横向复制两次，经过
+固件的相邻像素平均后能保持原320×240图像。这适合 Doom 的第一版显示后端。
+直接写320×240后备帧缓冲也有线索，但还需确认缓存维护、帧切换和线程互斥。
+以上是移植入口候选，未构成可刷入固件或已可调用的加载器。
+
+五、按钮输入（部分确认）
+UI setup file0x92DB4 调用 port setup 0x126DCC、button setup 0x126FF8、
+pattern setup0x1273CC。UI init0x92E3C 调用 port init0x126E8C、
+button init0x127084、pattern init0x1273EC。
+file0x12701C 更新按钮位图，遍历16字节按钮配置，并调用0x1270C4测试。
+0x1270C4支持两种输入判定：type1 对输入采样做位掩码/有效电平比较；type2
+检查数值是否在范围内。说明此抽象层兼容数字口与范围型输入，不应把全部
+按钮都武断认定为独立GPIO。
+file0x127094 返回状态结构0x717F88 +0x18 的当前按钮位图；
+file0x1270A0 返回+0x00的前次位图；0x1270AC 返回+0x14的扫描掩码。
+这些是自定义程序读取按键的候选入口，但尚未恢复每一位对应哪个实体键。
+file0x93028 创建 ui_input__handler 线程；入口literal0x92CCC 对应file0x92D4C。
+按键事件处理也有现成回调/状态机，尚未恢复完整事件 ABI。
+
+可复核反汇编：
+analysis/lcd-display-main.asm
+analysis/lcd-submit-main.asm
+analysis/lcd-panel-register-main.asm
+
+运行映射补充（主分析交叉证据）：
+main scatter table file0x198..0x228 各项(src,dst,len,handler)。初始镜像base
+0x071B8000，主code项src0x071B8980(file0x980), dst0x900,len0x6FDA20。
+故上述主code范围内运行时地址确认为 file offset -0x80：
+  lcddrv_display: runtime0x673DC
+  lcdapi_sub_display: runtime0x67BBC
+  inactive framebuffer getter: runtime0x67564
+  button current-mask getter: runtime0x127014
+MMIO和framebuffer literal本来就是运行时常量，不作减0x80变换。
+仍需取得执行入口，并确认调用前初始化/互斥/缓存条件；静态地址不等于已能运行。

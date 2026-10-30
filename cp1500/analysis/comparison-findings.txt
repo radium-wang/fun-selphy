@@ -1,0 +1,60 @@
+CP1500 固件对比与公开项目检索（2026-10-30）
+
+本轮完成：下载 1.0.6.0，与已有 1.0.7.0 做静态比较；阅读公开工具源码并验证格式假设。
+未完成/未知：CNN 解码、内部文件提取、CPU 识别、签名和回刷机制。
+
+官方来源
+1.0.6.0 页面：https://asia.canon/en/support/0401017402
+下载：https://gdlp01.c-wss.com/gds/4/0400010174/01/CP1500-v1060-win.zip
+本轮 1.0.6.0 HTTPS 下载成功；ZIP CRC 全部通过。
+1.0.6.0 CNN：6216468 字节；SHA256 37b7d60f9769814365a4d9ea27f409c9fe923dced5567bf0d05e628242968a76
+1.0.7.0 CNN：6217080 字节；SHA256 6d87a06fa84644922682bd16e77886fcc7bf19fa7ba2789b0833be96f050e36e
+增量：612 字节。
+
+本地观察（不是 REA Evidence）
+- 前 0xa0000（640 KiB）仅有 10 字节变化，集中在 0x2ac3e–0x2ac51。
+- 前缀第一次差异出现在 0x2ac3e。
+- 每 4096 字节选取一个 128 字节片段，保留至少 32 种字节且在新版中唯一的片段，向两侧扩展逐字节完全相同区间。
+- 合并后的旧版区间共 2139859 字节（约 2.14 MB）；这是匹配下界，包含填充和数据，不等于代码相似度。
+- 后半段找到多组跨位置完全匹配，常见偏移 +578、+589、+612。
+- 因而同偏移的大量差异不能被当作重新加密证据；插入/删除导致移动是部分差异的直接解释。
+- 旧版末尾 16 字节：00000000313036300100260055555555
+- 新版末尾 16 字节：00000000313037300100270055555555
+- ASCII 1060 -> 1070 与版本一致；另一字段 26 -> 27 的含义未知，不能断言为校验。
+- 0xa0000 是有用的布局观察边界；尚未证明它是分区或主程序起点。
+
+公开项目与适用性
+1. https://github.com/synacktiv/canon-tools
+   源码：https://raw.githubusercontent.com/synacktiv/canon-tools/main/decrypt_firmware.py
+   研究：https://www.synacktiv.com/publications/treasure-chest-party-quest-from-doom-to-exploit
+   目标是 PIXMA/MG6450 等机型，利用 16 字节循环 XOR 和 S-record 字符集约束解码。
+   对 CP1500_1070.cnn 的前 64 KiB，16 个相位均不存在能将所有字节变为其允许字符集的单字节 XOR 密钥。
+   这排除了从文件起点直接套用该特定方案，不排除分段或额外编码。
+2. https://github.com/leecher1337/pixma
+   源码：https://raw.githubusercontent.com/leecher1337/pixma/master/pixma_decrypt.c
+   https://raw.githubusercontent.com/leecher1337/pixma/master/pixma_unpack.c
+   PIXMA 的 XOR/SREC 解码及自定义压缩解包。读取源码后检查其解压函数特征：
+   70b5054c05480649451a0e462a4631462046ff
+   在 CP1500_1070.cnn 中未找到。未运行原始 C 解包程序；未发现可直接使用的入口。
+3. https://github.com/saeugetier/go-selphy-cp
+   可公开阅读的 Go 打印协议实现，来源指向 Wilmer van der Gaast 的早期项目。
+   README 描述 CP900，另有作者的 CP910 项目使用记录。
+   属于无线打印通信，不是 CNN 固件解包器；未在 CP1500 上验证。
+4. https://github.com/hgjazhgj/SELPHY_FTP_Print_Server
+   作者明确报告 CP1500 1.0.6.0 / QX20 测试，通过 CPNP 发送照片。
+   当前仓库清单主要是用户文档、许可证和模型文件，不应称其为完整开源驱动实现。
+   这是打印协议工作，不能证明能修改固件。
+5. https://github.com/protyposis/CanonCamcorderFirmwareTools
+   面向佳能摄像机 .FIM 的解密/加密工具；没有 CP1500/.cnn 支持证据，未套用。
+
+检索边界
+用 SELPHY/CP1500、CNN、firmware、unpack、decrypt、reverse engineering 等组合检索并查看以上仓库。
+本轮未找到已公开且可验证的 CP1500 CNN 解包器或第三方固件；这不是不存在此类项目的证明。
+
+后续方向（推断）
+优先分析几乎不变的前 640 KiB 中的数据编码/启动代码，特别是变动小块及其相邻内容；
+若能识别解码器，再分析从 0xa0000 起的主体。现有结果不支持把 CNN 简单视为 ZIP 或直接使用 PIXMA 工具。
+
+复现：python3 cp1500/compare_versions.py
+完整偏移、匹配区间及阴性测试：analysis/comparison.json
+未访问打印机、执行目标代码或刷写设备。

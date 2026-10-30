@@ -1,0 +1,73 @@
+CP1500 1070: writable symbol/callback execution assessment, 2026-10-30
+Static Capstone evidence only; no device interaction or target execution.
+Code locations are main.bin FILE OFFSETS unless explicitly runtime.
+
+CONCLUSION
+Two data-controlled indirect call paths are present and connected to DBGmon.
+Together with its address-based memory-write primitive, they establish plausible
+RAM-resident program entry routes. This is stronger than finding an unused C
+command, but not a demonstrated on-device loader or execution success.
+
+1. SYMBOL RECORD -> C EXTENSION CALL
+Lookup0x2e0994 scans RAM base runtime0x7d7e6c, bounded by word at0x70c720.
+The table belongs to zero-initialized RAM segment runtime0x760e80..0x18c2bb0;
+metadata0x70c71c is initialized writable data (file0x70871c).
+Initial metadata: capacity0x1388 (5000), used0, required0. Runtime used size
+must be read; do not replace it with the file's initial zero.
+Appender0x2d5590/0x2d56ac copies records to base+used, increments used and writes
+8-byte trailer copied from runtime0x70c72c. These are ordinary RAM stores.
+For type6: record stride0x1c, type at+4, inline NUL-terminated name at+8,
+size at+0x14 and function pointer at+0x18. Name area is12 bytes.
+Lookup uses strcmp, returns pointer without a target-range/authentication check.
+Caller0x2a1ab8 requires successful lookup and type6, then0x2a1b64 BLX r3.
+ABI: r0=request block, r1=request body length,r2=request block+0x400 (reply length word, not reply data).
+The request begins with the symbol name. On return r0==0 is success; TX code
+reads a response length from block+0x400. A returning entry must honor the ARM
+calling convention, preserve callee-saved registers and provide a valid response.
+
+Static implication: a valid type6 RAM record can resolve C to a RAM entry pointer.
+The absence of stock type6 exports does NOT prevent this data-controlled path.
+Appending a coherent record is structurally plausible but must preserve table
+stride/trailer/capacity and publish used length consistently. Existing entry
+conversion can change stride and break scanning. No record was modified here.
+
+2. CHANNEL CALLBACK -> INDIRECT CALL
+RX channel table runtime0xf59d00 + link*224 + channel*24.
+Dispatcher0x2dfa4c checks channel<9, entry byte0==1, loads function pointer
+entry+8 at0x2dfaf8 and BLX ip at0x2dfb0c. No pointer-range validation appears
+between load and call. Table is in BSS RAM;0x2df8a0 copies a24-byte template
+into it using memcpy. Other channel callbacks occupy+12/+16.
+ABI at RX call: r0=link,r1=channel,r2=6-byte subheader pointer,
+r3=RX buffer+offset OR0x40000000. Header already consumed through stream.
+Replacing an active channel RX pointer would make the next dispatch call that
+pointer, assuming memory write is effective/visible. It bypasses symbol lookup
+but carries more protocol/context obligations: preserve normal stream processing,
+credit accounting and response behavior or the debug connection may stop.
+No callback was modified here. Original pointer retention/restoration would be
+necessary for a reversible experiment.
+
+3. INSTRUCTION CACHE AND MEMORY VISIBILITY
+Existing per-range CP15 primitives,32-byte lines:
+file0x10dcc: c7,c10,1 (D-cache clean by MVA).
+file0x10de8: c7,c14,1 (D-cache clean+invalidate by MVA).
+file0x10e04: c7,c5,1 (I-cache invalidate by MVA).
+file0x2d5ca4 includes c7,c10,4 (drain write buffer).
+Main code segment runtime=file-0x80 for these functions.
+Higher wrapper0x321264 selects runtime0x10d4c=file0x10dcc and drains afterward.
+The inspected C path has no such cache preparation before BLX. RAM writes alone
+are insufficient evidence of correct instruction fetch. Alias/MMU attributes,
+target availability and ARM/Thumb entry state must be established separately.
+
+LIMITS AND NEXT EVIDENCE
+No complete MMU permissions, free allocation, stack budget or runtime locking
+analysis yet. No fixed payload load address is justified by these findings.
+CPU supports ARM/Thumb interworking BLX but a payload must match the selected
+instruction state and firmware ABI. Both callbacks run within firmware context;
+a long-running program would need scheduler/lifetime integration.
+First on-device evidence remains debug enumeration and read-only table inspection.
+Then reversible allocated-RAM read/write and a minimal returning entry could
+validate the static chain. These tests were not performed or claimed here.
+
+FOLLOW-UP: see ram-allocator-findings.txt, mmu-cache-findings.txt, and
+../payload/README.txt. Reply bytes start at request block; +0x400 stores length.
+A32-byte returning OK payload is built, not target-executed.

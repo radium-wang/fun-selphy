@@ -1,0 +1,84 @@
+CP1500 1.0.7.0 DBGmon USB/IPv4 transport static findings
+Only static analysis; no device access. Addresses below are main.bin FILE OFFSETS;
+main code runtime = file - 0x80. Data segment runtime 0x704000..0x760c50 maps to
+file runtime - 0x4000 (scatter table file0x1e8).
+
+CONFIRMED USB ENDPOINTS
+file0x9f594 dc_dbgmon_setup creates config at sp+0x10. Instructions0x9f5c4,
+0x9f5cc load0x87 and7; store at sp+0x34/+0x38. config fields+0x24/+0x28
+therefore contain IN EP7=0x87, OUT EP7=0x07. Call0x324734 copies these bytes to
+runtime0x70c728/+1; file0x3244a0..b4 reads them into mux initializer0x2dfc54.
+Initializer saves endpoint parameters at runtime0x70fa58/+4.
+file0x2df0cc sends IN;0x2df188 receives OUT. Both call0x33b300 with completion
+callback runtime0x2dfc68 (=file0x2dfce8), and callback reason1(IN) or2(OUT).
+USB API0x33b300 tests endpoint bit0x80 and branches to0x2a0ecc for IN,
+0x2a1068 for OUT. Requires buffer pointer64-byte alignment (test &0x3f).
+IN wrapper performs cache maintenance for pointers lacking0x40000000 alias.
+This proves compiled debug USB transport, not current device enumeration/accessibility.
+
+LINK RESET
+file0x9f550 compares halfword at input+2 with0x81, emits DEBUG_LINK_RESET,
+then calls0x32471c ->0x2dfce8(reason0). Full setup-packet field interpretation,
+USB interface selection and mode gating require more analysis.
+
+SHARED USB/IPV4 MUX
+file0x2dfce8 uses r1>>2 as link id, r1&3 as event reason.
+link0 USB, link1 IPv4. IPv4 server setup file0x2df414 uses socket(AF_INET,
+SOCK_STREAM,0), binds INADDR_ANY, listens backlog5. Accept code0x2df1d0.
+TX/RX queue wrappers0x2df834/0x2df7c8 pass identical callback/event machinery.
+Workers created in0x2df5f0: d_IPv4_SV, d_IPv4_TX, d_IPv4_RX.
+Data initial runtime0x7170f0/file0x7130f0 holds port7000 (0x1b58), BUT mux init
+replaces it using config field+0x2c. No verified effective configured port yet.
+Do not report TCP7000 as confirmed listening or exposed.
+
+OUTER FRAMING (HIGH CONFIDENCE)
+8-byte transport header, followed by separate variable-size payload transfer.
+Receive header0x2dffa8..b4 requests8B from OUT endpoint; completion path
+0x2e021c..268 sums8 bytes and requires (sum+1)&255 == 0.
+byte0 low nibble: flow-control credit/free-buffer count (0x2e0288..294).
+byte0 bit4 is emitted as flag from state0x70fa68 (semantic not fully recovered).
+byte1: number of submessages in associated payload (saved buffer descriptor+6).
+bytes2:4: payload byte length little endian (0x2e02bc..cc).
+bytes4:6: TX code can encode next queued payload length; exact RX use unresolved.
+byte6: initialized zero in generated header; full semantics unresolved.
+byte7: ones-complement additive checksum; transmit calculates at0x2e003c..80.
+If byte1 nonzero, receive payload of indicated length at0x2e02e8..f8.
+Buffers initialized as4 RX and4 TX slots per link, each0x4000B (0x2dfc84..d4).
+Do not infer secure bounds or packet acceptance beyond identified checks.
+
+SUBMESSAGE DISPATCH / HARDWARE FIFO CONNECTION (HIGH CONFIDENCE)
+Main worker file0x347d00 calls0x2dfa4c repeatedly.
+0x2dfa4c chooses completed RX buffer, configures stream with buffer+offset using
+0x32dd60, reads6-byte subheader via0x32ddc0. The stream read implementation reads
+repeatedly from port base+8; therefore later MMIO FIFO reads are consistent with
+reading the prepared in-memory transport payload through a hardware stream.
+Subheader byte1: channel id (<9 check at0x2dfac4..cc).
+Subheader u16 little-endian+2: complete submessage stride/length; advances
+current payload offset at0x2dfb2c..34. Header length itself6B.
+Channel table runtime0xf59d00 + link*224 + channel*24. If entry byte0==1,
+call entry+8 with r0=link,r1=channel,r2=6B-header-pointer,r3=payload-address
+OR0x40000000 (0x2dfae0..0x2dfb0c).
+Template at runtime0x7170fc contains +8 runtime0x2a1ba8 (=file0x2a1c28),
++12 runtime0x2a244c, +16 runtime0x2a26e0. file0x2df8a0 copies24B template
+into selected channel slot. Root-agent HDebug handler file0x2a1c28 is therefore
+reachable through the same registered-channel callback mechanism, not isolated
+from USB transport. Channel activation/handshake/mode gating still must be met.
+At handler0x2a1c44 header byte4 adds channel credit; if submessage length==6,
+no command bytes processed. Otherwise handler reads8 command-header bytes from
+MMIO0xf0000488. Root agent analyses command semantics separately.
+
+LIMITATIONS
+No live enumeration, USB transfer, TCP connect, memory write, firmware modification,
+or mode change performed. Compiled endpoints/handlers do not prove this mode is
+available in normal retail operation. No complete ready-to-use protocol client was
+constructed. Subsequent enable-chain analysis recovered the trigger and descriptor
+branches; see dbgmon-enable-chain.txt. Actual USB enumeration remains unobserved.
+
+ROOT-AGENT HANDSHAKE CROSS-REFERENCE
+Root independently traced channel0 control handler file0x2e0b00 and parser0x2e0b60.
+Open path0x2e0bc4 checks submessage byte7==1 (open), byte8 tag, byte9 target
+channel, and u16 fields at+0xa/+0xc with size requirement>=0x40e. Successful open
+sets target channel active=1 and replies0x81. Thus command payload alone is not
+sufficient: an accepted link state, channel0 control exchange and active channel
+are prerequisites. Exact on-device accessibility still unknown; refer root's
+handshake analysis for full field constraints.

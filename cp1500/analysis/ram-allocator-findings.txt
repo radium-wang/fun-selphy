@@ -1,0 +1,51 @@
+CP1500 1.0.7.0 RAM allocator static findings
+File offsets below unless explicitly runtime. Main executable code runtime=file-0x80.
+No allocations/device calls performed; no guessed free memory address.
+
+1. RAM MANAGER RANGE IS NOT FREE MEMORY
+main0x1334/1338 pass size0x060e0000 and base0x41f00000 to0x336788 (runtime336708), with r2=0 and callback r3=file1168/runtime10e8.
+Range [41f00000,47fe0000) is96.875MiB of memory managed/planned by rammgr, NOT a malloc arena that can be overwritten.0x336788 stores base/size in runtime76aacc, plans registered buffers through0x27b7c0, and records used extents.
+Callback0x1168 tests descriptor+0x14 nonzero; rounds used offset descriptor+0x10 to4, computes remaining start=base+used and remaining size=(base+total)-start. It sets DMB page size0x8000 (32KiB), clearsbit30 from start and calls0x3250f4 with {remaining_size,0x8000,cached_start}. DMB free pool therefore depends on actual registered-buffer layout. It cannot be inferred as entire96.875MiB.
+0x3250f4 initializes/acquires mutex runtime77ad98 and invokes0x2e10c0(config,0,1,0), releases mutex.0x2e10c0 requires nonzero size greater than page size, page size >=1024 and power-of-two, nonzero base. Base is aligned to at least8 bytes (0x2e1198..11c0); adjustment reduces available size. It initializes page accounting at runtime77aca4/77ad24. These are initialization functions, NOT allocate calls; never reinitialize a live allocator.
+
+2. REUSABLE FIRMWARE MALLOC/FREE IDENTIFIED
+Simple allocator entry file32d5a4 / runtime32d524:
+  input r0=requested bytes; it explicitly sets r1=0,r2=0.
+  returns r0=allocated pointer, or0 on failure.
+  common internal entry32d5b0 supplies global arena runtime70bae0 to31df18 with out-pointer and size. Success pointer hasbit30 cleared by32d640 if needed (cached alias).
+  Existing callers include1a75d8,1a8b98,104e60 etc: real firmware use, not merely named string.
+Matching simple free file32ab80 / runtime32ab00:
+  input r0=original pointer. Calls31dc04(arena70bae0,ptr).
+  success returns0. On failure logs then tailcalls logging routine; do not interpret its error return as stable status.
+Status-returning lower-level free file31dc04 / runtime31db84:
+  r0=arena runtime70bae0; r1=pointer; r0 return status0 on success.
+  clearsbit30 for lookup, checks arena and pointer4-byte alignment, locks arena, locates owning region, optionally removes0x14 tracing prefix, invokes321074, unlocks. Must use the exact allocation pointer, never an interior aligned address.
+Minimal lower-level alloc wrapper file31df04 / runtime31de84:
+  r0=arena, r1=void** output, r2=size; wrapper zeros optional source-context arguments before31df18. Returns status; output initialized0.
+
+ALIGNMENT / LIFETIME / CONTEXT
+- Underlying region allocator320d98 sets minimum payload8 bytes, rounds requested length to4, adds8 bytes internal header; no evidence of guaranteed8/16/32/64-byte payload alignment. Only4-byte alignment can be claimed.
+- If payload needs stronger alignment, request extra bytes, keep original pointer for free; payload alignment does not make its address an allocator base.
+- Global arena allocation/free uses lock functions2d6360/2d63b8.31df18 also invokes registered reclaim callbacks on allocation failure and retries. These APIs are not established safe from interrupts, while the monitor halts the owner task, or with allocator lock already held.
+- Allocation is uninitialized data; no implicit zeroing observed in simple malloc. Capacity and live free bytes depend on runtime state. No fixed payload address is available statically.
+- Ownership ends when matching free is called or firmware resets/reinitializes pools. Do not mix malloc/free with DMB handles or ThreadX block APIs.
+- Code execution from returned cached buffer additionally requires instruction/data cache coherence and valid calling context; allocator alone does not establish either.
+
+3. THREADX BLOCK POOL API AND DEBUG POOL
+file2c1ed8 / runtime2c1e58 = checked block allocate:
+  r0=pool control block, r1=void** output, r2=wait option. Validates magic0x424c4f43 ('BLOC') and context, dispatches2bdbd0. With wait0 and exhausted pool, output0/status0x10. Success0 and output=block header+4; header stores owning pool.
+file2c1f4c / runtime2c1ecc = checked create:
+  r0=control, r1=name, r2=block payload bytes, r3=backing start,
+  stack[0]=backing bytes, stack[4]=control-block size0x30.
+  Validates control-size0x30, distinct pool, backing size and context. Fixed-sized pool, not malloc.
+file2c20e0 / runtime2c2060 = checked block release:
+  r0=block pointer; loads owner from[ptr-4], checks 'BLOC', dispatches2bdfbc. Failure null/invalid pointer status3.
+Concrete dbgext_op_pool creation at2df90c..928:
+  pool control runtime127ccb0; backing runtime127bc90;
+  block payload0x404; backing0x1020; name dbgext_op_pool.
+  Including4-byte header per block, this is four blocks (0x408 each), NOT a large general-purpose scratch heap. It belongs to monitor operation processing and should not be commandeered for a program.
+
+OPEN ITEMS
+- Exact initialized heap region(s)/capacity and runtime free bytes require following rammgr registration and/or reading live metadata.
+- DMB allocate/free/accessor APIs not fully recovered here; no recommendation to use them instead of established global malloc/free.
+- Safe monitor-side invocation context, allocator ownership during callbacks, and cache maintenance must be resolved before using any of these routines on hardware.

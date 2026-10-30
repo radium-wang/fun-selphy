@@ -1,0 +1,48 @@
+CP1500 CPU / RAM / execution assessment, 2026-10-30
+Evidence: locally decoded official 1060/1070 artifacts, Python and Capstone.
+No hardware measurement or device command was performed. REA firmware backend unavailable.
+All code locations below are FILE OFFSETS, not directly callable addresses.
+
+CPU
+Boot offset 0x26f0 onward obtains/logs main_hz via register offset0x28,
+cpu_hz via0x2c. Wrapper0x1b5f4 calls0xa3c8, reading 0xf0000000|offset.
+0xa0c4 decodes the clock source/divider;0xa150 computes the PLL frequency.
+Float constant0x4bb71b00=24000000; multiplier n+64; exponent adjustment -1.
+Thus PLL=(n+64)*12000000. Integer divider mode divides by low20 bits.
+Both firmware versions' 374-record initialization tables give:
+cpu clock word f000002c=04000004, PLL f00000c8=11000018:
+  (24+64)*12000000/4=264000000 Hz.
+main clock word f0000028=02000008, PLL f00000c0=11000013:
+  (19+64)*12000000/8=124500000 Hz.
+This establishes INITIAL CONFIGURATION, not absence of later clock changes.
+ARM9 platform is supported by RTOS/library identifiers and ARM code; exact SoC unknown.
+
+RAM
+Main offsets0x1334..0x1344 pass base0x41f00000,size0x060e0000 to0x336788.
+Callee stores base/size and initializes the RAM-manager pool, then invokes callback
+file0x1168 through r3. Pool size=96.875 MiB,end-exclusive0x47fe0000.
+Callback0x1168 removes bit0x40000000 when passing to dc_dmb_init.
+Combined with boot load-address upper bound0x08000000 and main image staging
+at0x071b8000, this is strong evidence for a128MiB RAM map. It is NOT a chip-ID
+or physical RAM test. Pool capacity is not free RAM available to an application.
+Boot-only pool at boot0x1674 uses8MiB; that is not total physical capacity.
+
+MAIN SCATTER LOAD
+Main startup code0x100 iterates table0x198..0x228,16-byte records.
+Initial image base0x071b8000 inferred from startup literal entry0x071b80f8
+and matching copy sources. Copy routine0x13c and zero routine0x164.
+Important copied segment: src0x071b8980(file0x980),dest0x900,len0x6fda20.
+In this segment runtime address=file offset-0x80. This is NOT a universal
+mapping for the entire binary; data/BSS/vector segments have distinct mappings.
+See hardware-audit.json for all records. Boot also relocates; inspect_boot.py's
+0x500000 labels are disassembly coordinates, not proof of final runtime addresses.
+
+CUSTOM PROGRAM
+LCD and button functions now have static candidate addresses; see lcd-findings.txt.
+The required remaining prerequisite is a proven load/execute path, likely worth
+investigating through DBGmon registration/dispatch. See debug-findings.txt.
+No ELF loader, adb shell, arbitrary-jump command, or successful custom firmware boot
+has been established. A RAM-only colored-screen demo would be the first validation
+after establishing that path, calling conventions, cache coherency and thread context.
+Classic Doom is a plausible port target for this class of CPU/memory, but performance
+and successful execution have not been demonstrated.

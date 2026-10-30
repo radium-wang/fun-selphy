@@ -1,0 +1,45 @@
+CP1500 1.0.7.0 USB DBGmon enable follow-up (static only)
+Addresses = main.bin file offsets unless explicitly runtime.
+Scatter table verified by parent: code runtime=file-0x80; initialized data runtime=file+0x4000 for file0x700000..0x75cc50.
+
+CONFIRMED ENABLE CALLBACK CHAIN
+1. 0x1f93c USB setup registers handler returned by0x99750 with0x94564 (calls0x1f96c/970). Handler runtime711668 lives at file70d668; table fields:
+  +0 name ptr66655c; +4 init(runtime996a0=file99720);
+  +8 fini(runtime996b8=file99738);
+  +12 identify(runtime99634=file996b4);
+  +16 parse(runtime99548=file995c8);
+  +20 execute(runtime99654=file996d4).
+2. 0x995c8 requires exact12-byte command: 2b 01 followed by ten zero bytes. Match returns12, output status0; other input returns0/statusff. No auth comparison inside this parser.
+3. Registration0x9f7a0, call0x9f7bc passes runtime718068 to0x99740, stored runtime711660. Table runtime718068=file714068 contains runtime12e8a8=file12e928, named adml_usb_dev__dbgmon_callback.
+4. execute0x996d4 checks status0, invokes callback(event5,0,context); callback0x12e928 on event5 calls0x6438.
+5. 0x6438 logs Enable DBGmon interface and sends message5 via0x2cb38 to runtime827354 queue.
+6. Worker0x2c9f8 uses dispatch table runtime70da0c at0x2ca7c. Entry5=file709a20=runtime282c0=>file28340.
+7. 0x28340 checks runtime827450[0] and exits if already enabled. Otherwise calls0x28090(1),0xdb30,0xc4d0; sets byte1; invokes sleep-like0x2c0f8c with1500; calls0x1fa60(flag1,secondary flag); tailcalls0x28210(interface1).
+8. 0x1fa60->0x1fc70 selects descriptor set by two flags. If first flag0,0x20e1c returns runtime70d1ac; if first1/second0,0x20e24 returns70d1cc; both1,0x20e2c returns70d1ec. Then0x9a3dc, USB-driver calls and0x9a418/0x33ab48 follow.
+9. 0x28210 interface1 when debug flag1 calls0x104374,0x6668(1,1),0x1ff78(0x2e),0x1fa44. Last function calls0x94448, setting printer enabled flag runtime7114e8[1].
+Thus previously missing callback and queue-dispatch gaps are closed. Initialization and runtime device state still need validation on actual hardware; no device touched.
+
+DEBUG USB ENDPOINTS: CONFIRMED CONFIGURATION AND DESCRIPTORS
+- 0x9f594 adml_dbgmon_setup builds config structure at sp+0x10. It stores0x87 at sp+0x34 (struct+0x24) and7 atsp+0x38 (struct+0x28), and calls0x324734.
+-0x324774..0x324790 writes those config byte fields to runtime70c728[0]=0x87 and[1]=0x07. Initial zero values in data are overwritten during setup.
+- Same setup creates driver structure runtimefc852c with endpoint bytes +1=0x87,+2=7 and registers it through0x9a198(r0=2).
+- Descriptor record at file70907d: 09 04 02 00 02 ff ff 00 00: interface2,alt0,2 endpoints,vendor class/subclass ff/ff.
+- file709086:07 05 07 02 40 00 00 (bulk OUT7,64-byte FS packet).
+- file70908d:07 05 87 02 40 00 00 (bulk IN7,64-byte FS packet).
+- Debug descriptor list runtime70d4fc=file7094fc references this interface and endpoint pair. Selected when both mode flags nonzero. Debug config70d3dc also includes alternate interface layouts; do not assume same interface number for every descriptor set.
+- Device descriptor file708fc6 (first debug branch) is VID04a9 PID3302. Other branch file708fd8 is VID044e PID1312. Actual enumeration depends on selected flags. These are firmware descriptor values, not observed USB IDs.
+- Printer setup0x94250 passes endpoint0x82 and1 into0x9ae10, matching printer interface0 descriptorfile709005 (class07,subclass01,protocol02) and bulk OUT1/IN82 descriptorfile70900e/15.
+
+OUTER PACKET / REACHABILITY LIMITS
+- Printer handler table registration and matching exact12-byte payload are proven. Generic printer state machine0x941cc sets required command length12.0x93dac also requests12.0x93c4c calls handler parse via table+0x10.
+- Have NOT completed full generic stream framing/handler-selection flow, command-buffer population, initial connection events or possible previous state requirements. Therefore exact12 bytes are a parser-level command, not yet a validated standalone wire transaction.
+- No code-execution primitive established by this enable-chain investigation. Separate transport/handler analysis is needed to connect debug mode to safe memory reads/writes/execute behavior.
+- No USB commands, network connections, RAM writes or flash operations performed.
+
+ADDENDUM — GENERIC PRINT STREAM IDENTIFICATION FOLLOWED
+-0x94858 receives stream command buffer;0x94870..a8 calls0x93ab0 to fill exactly12 bytes.
+-0x948b0..f8 loops every registered printer handler, calling table+0x0c identify with SAME12-byte buffer; on success stores selected index at runtime7114e8+4 and returns1. On no match it slides buffer one byte and resumes filling (0x948fc..94930). There is no additional global magic/header check in this selection routine.
+-0x93dc0 state0 calls0x94858 at0x93e18. It requires normal printer-enabled byte runtime7114e8+1 nonzero at0x93e20..28, then calls selected handler+0x14 execute via0x93e4c/93e9c with matched buffer/status.
+-This closes the generic selection->DBGmon execute path. The exact12-byte command is therefore directly recognized in the generic printer command stream, rather than requiring a separate factory command envelope in the examined path.
+-0x94250 configures IN82/OUT01 with0x9ae10 ('usb printer bulk data' buffer setup). Full lowest-level OUT receive scheduling not re-disassembled in this follow-up; event/state preconditions and real-device acceptance remain untested. No need to claim arbitrary standalone transaction works in all states.
+-Descriptor interface2 details above apply directly to the70d1ec branch. The70d1cc branch has multiple interfaces/alternate settings and should be resolved separately before choosing an interface number for a real host tool.

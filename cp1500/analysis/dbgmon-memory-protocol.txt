@@ -1,0 +1,90 @@
+CP1500 1.0.7.0 USB DBGmon memory commands and execution assessment
+2026-10-30; local static analysis only (Capstone/Python, not a REA engine result).
+No USB access, RAM modification, payload execution or firmware flashing performed.
+Addresses below are FILE OFFSETS in unpacked/1070/main.bin unless marked runtime.
+For the analyzed code segment runtime=file-0x80. Data mapping is separate.
+
+EVIDENCE CHAIN
+See dbgmon-enable-chain.txt and dbgmon-transport-findings.txt.
+USB OUT0x07 -> receive wrapper0x2df188 -> completion0x2dfce8 -> mux buffering.
+Worker ->0x2dfa4c: select RX buffer, configure memory-stream0x32dd60, consume6B
+subheader via0x32ddc0; channel table at runtime f59d00+link*224+channel*24.
+Template runtime7170fc/file7130fc has RX callback runtime2a1ba8=file2a1c28.
+0x2df8a0 installs template; active channel byte0 must equal1 to dispatch.
+The command handler reads stream FIFO f0000488 eight times into command[0..7].
+This connects actual memory instructions to the USB transport; it is no longer
+just a diagnostic string inference. Retail-mode availability remains untested.
+
+INNER COMMAND HEADER
+8 bytes, followed by command-specific body when applicable.
+command[0]=0x1b (ESC); command[1]=0x44 ('D') or0x64 ('d'); command[2]=opcode.
+The distinction between D/d has no separate validation in this handler.
+All offsets below refer to these8 command bytes, not outer/submessage headers.
+LE32 reader0x2cd35c; LE16 reader0x2cd380.
+
+CONFIRMED MEMORY OPERATIONS
+R (0x52): LE32@3 is address.0x2a1db4 calls LE32 reader then LDRB[address].
+  Reply command byte7 receives value (0x2a1fa0). One byte read.
+W (0x57): LE32@3 is address; byte7 is value.0x2a2050..60 executes STRB.
+M (0x4d), subcommand byte3:
+  't': LE32@4 -> per-channel state+0x418 (32-bit read address).
+  'u': LE32@4 -> state+0x414 (32-bit write address).
+  'w': LE32@4 -> state+0x404 (MI bulk-write cursor).
+  'r': LE32@4 -> state+0x408 (bulk-read cursor, set in TX handler0x2a25b8).
+t (0x74): dereference32 at state+0x418; result placed in reply bytes4..7 LE.
+  Evidence0x2a21fc ->0x2a200c.
+u (0x75): LE32@4 written via STR to address state+0x414 (0x2a2208..18).
+A (0x41), subcommand byte3:
+  'w': LE32@4 -> state+0x40c (CPU copy/write cursor),0x2a2160..78.
+  'r': LE32@4 -> state+0x410 (alternate read cursor),0x2a268c..a8.
+o (0x6f): LE16@3 count, body immediately after8B header.0x2a2180..1f8
+  copies from FIFO into state+0x40c, using aligned32/16/8-bit stores and advancing
+  cursor. This is sufficient in code to place arbitrary bytes into writable RAM.
+  No address-range whitelist was found in this branch. Buffer lifetime, chosen
+  RAM region, outer framing and hardware acceptance are separate concerns.
+r (0x72): LE16@3 count; TX handler0x2a25f4..262c sends data from state+0x408
+  through0x2e0430 with mode1;0x2a2710 advances cursor by count.
+i (0x69): analogous read from state+0x410; other modes g/p/s/x exist but are
+  not needed to establish basic memory access and are not fully specified here.
+
+RESPONSE / FLOW CONTROL
+0x2a2314 queues8-byte command reply in128-entry per-channel ring.
+0x2a24cc builds output submessages. Not all commands return the same shape:
+memory-read commands may append data, setter/write commands may have only6-byte
+subheader. Do not assume a single synchronous8-byte acknowledgement per request.
+Subheader byte4 grants credit; channel credit tracked at table+4.
+Outer checksum and active-channel exchange are mandatory protocol layers;
+see transport report. This document is not a ready-to-send host client.
+
+FUNCTION CALL C (0x43): REAL CALL, NOT PROVEN ARBITRARY GO
+RX dispatcher0x2a24a8 calls0x2a1ab8. It obtains a0x404-byte pool block, reads
+LE16(command+4) body bytes from FIFO into the block, then calls symbol lookup
+0x2e0994. Lookup compares the body-start string to exported names and returns
+record type, size and pointer. Only type==6 is accepted (0x2a1b44..50).
+0x2a1b64 BLX r3 calls the returned record+0x18 function pointer, with
+r0=request block, r1=request length, r2=request block+0x400 response area.
+This is a registered extension-command ABI, not an address field GO command.
+TX helper0x2a1ba8 reads response length at block+0x400; pooled block is released.
+There is no demonstrated cache invalidation or arbitrary executable-loading ABI.
+
+SYMBOL TABLE
+Lookup0x2e0994 scans runtime0x7d7e6c up to size at runtime0x70c720.
+Record type+4; name+8; size+0x14; data/function pointer+0x18.
+Type1/5/6 record stride0x1c; type3 stride0x20; type0 stride0x98; type2 stride8.
+Export function0x324830 builds records and appends through0x2d5590.
+Bounded scan of direct ARM B/BL references to0x324830 in file[0,0x6fe3a0)
+found types1 and3 in observed argument setup; no confirmed type6 export.
+Direct references to append0x2d5590 found only init0x32457c and export0x3248f4.
+Indirect registration or another build/mode is not ruled out. Therefore neither
+a callable stock extension nor arbitrary jump has been established.
+
+ASSESSMENT
+RAM read/write: high-confidence implemented and wired to DBGmon mux.
+Loading custom bytes into RAM: supported by the same write primitive in code;
+not demonstrated on hardware, and usable allocation must first be established.
+Executing those bytes: unresolved. Existing C command is symbol/type gated.
+Writable callbacks/symbols suggest possible further avenues, but no such bypass,
+function-pointer alteration, or execution experiment was performed or validated.
+Next useful hardware evidence would be USB debug enumeration and a read-only
+known-byte comparison; then separately allocated-RAM round-trip verification.
+Running code additionally needs a proven entry, ABI, cache and scheduler handling.
